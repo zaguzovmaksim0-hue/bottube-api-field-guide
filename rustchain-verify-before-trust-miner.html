@@ -1,0 +1,97 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>RustChain Miner: A Verify-Before-Trust Dry-Run Tutorial</title><meta name="description" content="A practical RustChain dry-run tutorial: verify source, environment, hardware fingerprint output, node health, and wallet identity before mining."><style>body{font:17px/1.65 system-ui,-apple-system,Segoe UI,sans-serif;max-width:900px;margin:auto;padding:28px;color:#172536;background:#fbfcfe}h1{font-size:2.35rem;line-height:1.12}h2{margin-top:2rem}pre{overflow:auto;background:#101923;color:#d9edf5;padding:16px;border-radius:10px}code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.note{padding:14px 18px;background:#eef6ff;border-left:4px solid #3170ad}.warn{padding:14px 18px;background:#fff3d9;border-left:4px solid #ad7300}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #ccd6df;padding:8px;text-align:left}a{color:#165d9f}footer{margin-top:3rem;border-top:1px solid #ccd6df;padding-top:1rem;color:#596978}</style></head><body>
+<p><a href="./">← Field Guide home</a></p>
+<h1>RustChain Miner: A Verify-Before-Trust Dry-Run Tutorial</h1>
+<p><strong>Practical field note · September 2026</strong></p>
+<p>If you are testing RustChain on unfamiliar hardware, the safest first goal is not “start mining.” It is to prove what code you are running, what hardware the miner sees, what the fingerprint checks report, and whether the public node is reachable — <em>without changing network state</em>. RustChain's current Linux miner supports a dry-run path that makes this possible.</p>
+<div class="note"><strong>What this tutorial does:</strong> inspect the repository, identify the runtime, run a local fingerprint/dry-run check, read the output, and verify the public health endpoint. It deliberately stops before attestation, enrollment, or the mining loop.</div>
+
+<h2>1. Start from the canonical repository</h2>
+<p>The public source is <a href="https://github.com/Scottcjn/Rustchain">Scottcjn/Rustchain</a>. Clone it, record the exact commit, and inspect the miner path before running anything:</p>
+<pre><code>git clone https://github.com/Scottcjn/Rustchain.git
+cd Rustchain
+git rev-parse HEAD
+sed -n '1,180p' miners/linux/rustchain_linux_miner.py
+</code></pre>
+<p>Recording the commit matters because a test result without a source revision is hard to reproduce later. If behavior changes, the commit lets you tell whether the hardware changed or the code did.</p>
+
+<h2>2. Record the environment before installing or changing packages</h2>
+<pre><code>uname -a
+python --version
+uname -m
+command -v python
+</code></pre>
+<p>On my physical Android/Termux test device the relevant architecture was <code>aarch64</code>. The miner reported a Cortex-A520 CPU, eight logical cores, and about 11 GB of visible memory. That is useful evidence, but it is not the same thing as a reward multiplier: fingerprint success and reward weight are separate questions.</p>
+<div class="warn"><strong>Android caveat:</strong> the Linux miner currently warns that Android is not a primary supported Linux-miner platform and that some hardware probes can be incomplete. Treat that warning as evidence, not as something to suppress.</div>
+
+<h2>3. Use dry-run before any state-changing operation</h2>
+<p>From the repository root, use the miner's dry-run mode with your own wallet identifier:</p>
+<pre><code>python miners/linux/rustchain_linux_miner.py \
+  --wallet YOUR_RTC_WALLET \
+  --dry-run
+</code></pre>
+<p>The current dry-run explicitly says that it will not modify mining/network state. It performs local platform/fingerprint work and a read-only health check, then tells you what the next real stages would be rather than executing them.</p>
+<p>A healthy dry-run should give you enough information to answer these questions:</p>
+<ul>
+<li>Which CPU and architecture did the miner detect?</li>
+<li>How many fingerprint checks are available on this platform?</li>
+<li>Did the complete fingerprint bundle pass?</li>
+<li>Did the public node health probe return successfully?</li>
+<li>Is the wallet shown in the output the wallet you intended to use?</li>
+</ul>
+
+<h2>4. Read the fingerprint result as a bundle</h2>
+<p>On the Android/Termux run I captured, the current base suite exposed six checks:</p>
+<table><thead><tr><th>Check</th><th>What it contributes conceptually</th></tr></thead><tbody>
+<tr><td>Clock-skew / oscillator drift</td><td>Timing behavior</td></tr>
+<tr><td>Cache timing</td><td>Memory/cache behavior</td></tr>
+<tr><td>SIMD identity</td><td>Instruction-unit behavior</td></tr>
+<tr><td>Thermal drift</td><td>Physical timing under changing conditions</td></tr>
+<tr><td>Instruction-path jitter</td><td>Execution timing variability</td></tr>
+<tr><td>Anti-emulation</td><td>Independent VM/emulator/runtime clues</td></tr>
+</tbody></table>
+<p>All six passed in native Termux on the physical phone. In a separate friendly red-team run on the same phone inside Debian PRoot, the first five passed but anti-emulation failed because <code>systemd-detect-virt</code> reported <code>proot</code>. That contrast is a good illustration of why RustChain uses a bundle: a single timing probe does not have to carry the entire decision.</p>
+
+<h2>5. Verify the node health separately</h2>
+<p>The public production hostname used by current miner configuration is <code>https://rustchain.org</code>. A bounded read-only health check is:</p>
+<pre><code>curl --fail --silent --show-error \
+  --connect-timeout 5 --max-time 15 \
+  https://rustchain.org/health
+</code></pre>
+<p>Do not “solve” a certificate failure by reflexively adding <code>-k</code> or disabling TLS verification. A network-path or certificate error is information. For production automation, fail closed and investigate the trust path rather than silently downgrading it.</p>
+
+<h2>6. Keep hardware identity separate from wallet identity</h2>
+<p>This distinction caught a real bug in my own test workflow. The hardware-derived miner identity on one run was not the same as the RTC wallet that actually held a balance. A balance check against the hardware ID returned zero while the wallet itself held funds. The practical rule is simple: when displaying wallet funds, query the wallet identifier, not a hardware/miner label unless the API explicitly defines them as the same identity.</p>
+<p>Before moving beyond dry-run, write down:</p>
+<pre><code>source commit
+node URL
+wallet address / miner_id used for payout
+CPU + architecture
+fingerprint result
+health result
+</code></pre>
+<p>That small evidence packet makes later attestation or reward debugging much easier.</p>
+
+<h2>7. What comes after dry-run?</h2>
+<p>The miner describes the real sequence as <strong>attest → enroll → mining loop</strong>. Those stages are state-changing and should be a separate decision. If your goal is compatibility testing, QA, documentation, or a bounty that only asks for a dry-run, stop here. There is no engineering benefit in turning a read-only test into a persistent miner merely because the binary can do so.</p>
+
+<h2>8. A reproducible troubleshooting order</h2>
+<ol>
+<li>Pin the repository commit.</li>
+<li>Record OS, architecture, Python/runtime versions.</li>
+<li>Run the local dry-run/fingerprint path.</li>
+<li>Read every failed check and its raw evidence.</li>
+<li>Probe <code>/health</code> separately with bounded TLS-verified HTTP.</li>
+<li>Verify the wallet identity used for balance/payout operations.</li>
+<li>Only then decide whether a state-changing attestation/enrollment is actually required.</li>
+</ol>
+<p>This order is deliberately boring. That is the point. It separates source, local hardware, network transport, identity, and reward accounting so one failure does not get “fixed” by randomly changing all five layers.</p>
+
+<h2>References</h2>
+<ul>
+<li><a href="https://github.com/Scottcjn/Rustchain">RustChain source</a></li>
+<li><a href="https://github.com/Scottcjn/Rustchain/blob/main/miners/linux/rustchain_linux_miner.py">Current Linux miner source</a></li>
+<li><a href="https://github.com/Scottcjn/Rustchain/blob/main/miners/fingerprint_checks.py">Fingerprint checks</a></li>
+<li><a href="https://github.com/Scottcjn/Rustchain/blob/main/rips/docs/RIP-0308-proof-of-physical-ai.md">RIP-0308: Proof of Physical AI</a></li>
+</ul>
+<footer>Original tutorial prepared with AI assistance and checked against actual local dry-run evidence and current public source. It is a QA/verification guide, not a profitability claim and not advice to leave mining software running.</footer>
+</body></html>
